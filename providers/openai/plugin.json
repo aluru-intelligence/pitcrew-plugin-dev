@@ -29,7 +29,7 @@
         "websiteURL": "https://www.gopitcrew.com/",
         "privacyPolicyURL": "https://www.gopitcrew.com/privacy",
         "termsOfServiceURL": "https://www.gopitcrew.com/terms",
-        "supportURL": "mailto:support@gopitcrew.com",
+        "supportURL": "https://www.gopitcrew.com/docs/mcp",
         "defaultPrompt": [
           "List my PitCrew agents",
           "Build an agent that summarises Form ADV filings and emails the key risks to compliance@myfirm.com",
