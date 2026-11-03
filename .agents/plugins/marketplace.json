@@ -12,7 +12,7 @@
       "name": "pitcrew-dev",
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/aluru-intelligence/pitcrew-plugin-dev.git",
+        "url": "https://github.com/pitcrew-agents/pitcrew-plugin-dev.git",
         "path": "providers/openai",
         "ref": "master"
       },
