@@ -10,7 +10,12 @@
   "plugins": [
     {
       "name": "pitcrew-dev",
-      "source": "./providers/openai/",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/aluru-intelligence/pitcrew-plugin-dev.git",
+        "path": "providers/openai",
+        "ref": "master"
+      },
       "policy": {
         "installation": "INSTALLED_BY_DEFAULT",
         "authentication": "ON_INSTALL"
