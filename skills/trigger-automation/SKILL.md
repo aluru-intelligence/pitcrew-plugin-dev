@@ -37,13 +37,15 @@ Pick the right one based on how the user wants the agent to fire.
 
 ## Core workflow
 
-1. **Identify the target agent.** If the user didn't name an exact agent, call `list_agents` and have the user pick.
-2. **Pre-flight based on trigger type** (see the per-type sections below).
-3. **Check existing triggers.** Call `list_agent_triggers` on the agent. If a similar trigger already exists, tell the user and ask whether to replace it or create another — the backend allows duplicates, so don't rely on it to deduplicate.
-4. **Confirm before creating.** For each trigger type, confirm the key choices with the user (schedule + timezone, event source + mapping, target agent for bulk). Triggers can create recurring real-world activity — don't guess.
-5. **Create.** Call the matching `create_*_trigger` tool.
-6. **For Event triggers only**: the trigger is returned **inactive**. Call `enable_trigger` immediately after a successful create. Do NOT tell the user the trigger is active until `enable_trigger` succeeds.
-7. **Summarise back.** Tell the user: trigger name, what fires it, when the next run will be (for Schedule / After bulk), and how to disable or delete it.
+1. **Identify the target agent.** If the user didn't name an exact agent, call `list_agents` and have the user pick. Capture the `agent_id`.
+2. **Fetch the agent's schema.** Call `get_agent(agent_id)` and read `input_schema.properties` + `input_schema.required`. You need this for every trigger type to know what the agent expects as inputs. For start_bulk / after_bulk, also read `state_schema` and the swimlane task `output_mapping` entries to know which `$.state.*` and `$.bulk_run.*` paths are valid.
+3. **Pre-flight based on trigger type** (see the per-type sections below).
+4. **Resolve the mapping.** See the "Mapping agent inputs" section — auto-map what you can, ask for the rest.
+5. **Check existing triggers.** Call `list_agent_triggers` on the agent. If a similar trigger already exists, tell the user and ask whether to replace it or create another, the backend allows duplicates, so don't rely on it to deduplicate.
+6. **Confirm the full plan before creating.** Show the user a compact summary: trigger type and name; (Schedule) cron + timezone; (Event) toolkit + trigger slug + the user-supplied `trigger_config`; the complete `payload_mapping` (or `iterate` for start_bulk) shown side by side with the agent's input_schema; and what happens next. Wait for an explicit yes. Triggers create recurring real-world activity, a wrong mapping could email the wrong person or run an agent every minute instead of every day.
+7. **Create.** Call the matching `create_*_trigger` tool.
+8. **For Event triggers only**: the trigger is returned **inactive**. Call `enable_trigger` immediately after a successful create. Do NOT tell the user the trigger is active until `enable_trigger` succeeds.
+9. **Summarise back.** Tell the user: trigger name, what fires it, when the next run will be (for Schedule / After bulk), and how to disable or delete it.
 
 ## Pre-flight: Schedule triggers
 
@@ -61,10 +63,10 @@ Before calling `create_event_trigger`:
 2. **Call `list_available_external_triggers`** with the relevant toolkit slug. Each returned trigger has:
    - `slug` → use as `trigger_slug`
    - `toolkit_slug` → use as `toolkit_slug`
-   - `config_schema` → tells you what to put in `trigger_config` (ask the user for each required field)
+   - `config_schema` → tells you what to put in `trigger_config`
    - `payload_schema` → tells you what fields will be available for `payload_mapping`
-3. **Build `trigger_config`** from the config_schema fields. Ask the user for each required field (e.g. Gmail: label, interval, query filter).
-4. **Build `payload_mapping`** by matching the agent's input fields to the trigger's payload fields using JSONPath (e.g. `{"email_subject": "$.payload.subject"}`). Ask the user how they want each agent input filled.
+3. **Build `trigger_config`** from `config_schema`. Fields with a `default` can be left out unless the user wants to override them. Ask the user for each required field without a default (e.g. a Gmail search `query` to narrow which messages fire the trigger).
+4. **Build `payload_mapping`** via the "Mapping agent inputs" section below. Do not hand-roll it inline here.
 5. **Call `create_event_trigger`.** The returned trigger has `enabled: false`.
 6. **Immediately call `enable_trigger`.** Only now is the trigger live.
 
@@ -73,8 +75,33 @@ Before calling `create_event_trigger`:
 Before calling `create_start_bulk_trigger` or `create_after_bulk_trigger`:
 
 1. **Call `list_agents`** and confirm the target agent exists. Use its id as `target_agent_id`.
-2. For **start_bulk**: ask the user what field in the parent agent's output represents the "list of things to iterate over." Build an `iterate` map like `{"client_id": "$.state.items[*].id"}`. `iterate` must be non-empty — the backend rejects empty.
-3. For **after_bulk**: ask the user what aggregated data the downstream agent needs. Options for `aggregate_mode`: `final_reports` (default — list of each child's final report), `all_outputs` (list of every task output per child), `s3_manifest` (pointer to full artifact set in S3). Build `payload_mapping` with JSONPath rooted at `$.bulk_run`.
+2. **Call `get_agent(target_agent_id)`** so you have the downstream agent's `input_schema` for the mapping step.
+3. For **start_bulk**: ask the user what field in the parent agent's output represents the "list of things to iterate over." Build an `iterate` map like `{"client_id": "$.state.items[*].id"}`, grounding the JSONPath in the parent's `state_schema` / task output_mappings (from the parent's `get_agent` response). `iterate` must be non-empty, the backend rejects empty.
+4. For **after_bulk**: ask the user what aggregated data the downstream agent needs. Options for `aggregate_mode`: `final_reports` (default, list of each child's final report), `all_outputs` (list of every task output per child), `s3_manifest` (pointer to full artifact set in S3). Build `payload_mapping` with JSONPath rooted at `$.bulk_run`, following the "Mapping agent inputs" section.
+
+## Mapping agent inputs
+
+Every trigger type (except pure-static Schedule) needs a `payload_mapping` (or `iterate`, for start_bulk) that satisfies the target agent's `input_schema`. Resolve it in this order:
+
+1. **Enumerate the agent's required inputs.** From `get_agent(agent_id).agent.input_schema`, list every field in `required`, plus any optional fields the user explicitly mentioned.
+
+2. **Identify the source for each field** based on trigger type:
+   - **Schedule**: static values the user provides (e.g. `{"client_id": "123"}`). Optional entirely if the agent has no required inputs.
+   - **Event**: JSONPaths rooted at `$.payload.*`, drawn from the trigger's `payload_schema.properties` (from `list_available_external_triggers`).
+   - **Start-bulk**: JSONPaths rooted at `$.state.*` in the parent agent, usually an array path like `$.state.items[*].id`. This goes in `iterate`, not `payload_mapping`.
+   - **After-bulk**: JSONPaths rooted at `$.bulk_run.*` (the aggregated child-run output in the shape chosen by `aggregate_mode`).
+
+3. **Auto-map what you can, conservatively.** For event triggers, match agent inputs to payload fields when names or types line up unambiguously. Common Gmail mappings:
+   - `subject` / `email_subject` ← `$.payload.subject`
+   - `sender` / `from_email` / `from` ← `$.payload.sender`
+   - `body` / `message_text` / `email_body` ← `$.payload.message_text`
+   - `thread_id` ← `$.payload.thread_id`
+   - If the agent input is a file/document and the payload has `attachment_list`, map to `$.payload.attachment_list[0]` and tell the user you assumed the first attachment.
+   - Only auto-map when you're confident. If several payload fields could plausibly fit one agent input (e.g. `recipients` vs `to` vs `cc`), ask.
+
+4. **Ask the user for the rest.** For every required agent input you did not auto-map, prompt with the field name, its description from `input_schema`, and its type. Offer sensible options when payload fields could plausibly fit.
+
+5. **Present the resolved mapping back for confirmation** as part of step 6 of the Core workflow. Show it as a table: agent input → source (auto or user-supplied). Do not call any `create_*_trigger` tool until the user confirms.
 
 ## Important things to tell the user
 
@@ -94,8 +121,10 @@ If the user says their trigger didn't fire:
 ## Tool reference
 
 Discovery (read-only):
+- `list_agents` — all agents in the org; use to let the user pick one
+- `get_agent(agent_id, include_swimlanes?)` — one agent's full spec, including `input_schema`, `state_schema`, `output_schema`, and swimlane tasks. Required before building any `payload_mapping` or `iterate`.
 - `list_toolkits` — connected third-party apps for Event triggers
-- `list_available_external_triggers(toolkits, limit)` — specific event slugs within an app
+- `list_available_external_triggers(toolkits, limit)` — specific event slugs within an app; each entry carries `config_schema` and `payload_schema`
 - `list_schedule_presets` — cron presets (hourly, weekday 9am, etc.)
 - `list_agent_triggers(agent_id)` — existing triggers on an agent
 
