@@ -20,6 +20,12 @@ You do NOT stream or build incrementally field-by-field — write the full array
 **Collection first, always.** Every form is built from source material that lives in a
 document collection. Never design fields from the chat description or from memory alone.
 `studio_create_session` rejects a call without a ready collection, so you cannot skip step 0.
+
+**Upload the original file, never a copy of it.** If the user gives a file (especially a PDF form),
+the file itself goes into the collection. Never convert, summarize, transcribe, OCR or compress it
+into Markdown, text or any other file and upload that instead. A converted copy cannot be
+form-extracted (`is_form` works on PDFs only) and loses the layout the extraction needs.
+`requirements.md` is only for when the user gave no file at all.
 </constraints>
 
 ## Tools at your disposal
@@ -49,7 +55,7 @@ document collection. Never design fields from the chat description or from memor
 1. **Find the source.** One of:
    - a file the user attached or named (a sample form, a PDF, a spreadsheet of fields, a prior questionnaire);
    - a collection the user names: `list_collections` / `get_collection`, and reuse it;
-   - only words (they described the form in chat): save their requirements verbatim, plus any
+   - only words, and no file anywhere in the conversation (they described the form in chat): save their requirements verbatim, plus any
      delivery instructions, as `requirements.md` and treat that file as the source.
    If there is neither a file nor a description, ask for one and stop. Do not guess a form.
 2. **Collection.** Reuse the one the user named. Otherwise
@@ -62,9 +68,12 @@ document collection. Never design fields from the chat description or from memor
    in the collection, call `start_form_extraction(collection_id, md5_hash)` instead.
    If the call fails because form extraction is off on this server, upload again without
    `is_form` and tell the user the field list will come from reading the document.
-   Limits: 10 MB per file and about 5 files per call. If you cannot produce the file's bytes
-   here (large or binary file), do not skip the collection. Ask the user to upload it to a
-   collection in PitCrew and give you its name or id.
+   Limits: 10 MB per file and about 5 files per call. `data` must be the file's exact bytes in
+   base64. If you cannot send them reliably (a PDF is usually tens of thousands of characters),
+   STOP. Do not convert the file to Markdown or any other format as a workaround, and do not
+   upload a partial or re-encoded copy. Tell the user to upload the original in PitCrew into a
+   new collection (turn the form option on for a form PDF) and give you its name or id, then
+   continue from step 4 with that collection. Reuse a collection only if it holds the original file.
 4. **Wait.** Call `get_collection_status(collection_id)` until `overall == "ready"`
    (about 20–60 s per PDF plus embedding). Zero documents, `failed`, or still `ingesting` means
    you cannot continue: fix it or tell the user. Keep each document's `document_id`.
