@@ -93,7 +93,7 @@ PitCrew is purpose-built for regulated workflows. Documents you process through 
 
 ## Development
 
-This repo is the **dev build** of the plugin (`PitCrew MCP Dev`, pointing at `mcp.dev.gopitcrew.com`). It's a GitHub fork of the production repo (`aluru-intelligence/pitcrew-plugin`). Day-to-day work and product-team testing happens here. Shipping a verified change means opening a pull request from this fork into the production repo.
+This repo is the **dev build** of the plugin (`PitCrew MCP Dev`, pointing at `mcp.dev.gopitcrew.com`). It's a GitHub fork of the production repo (`pitcrew-agents/pitcrew-plugin`). Day-to-day work and product-team testing happens here. Shipping a verified change means opening a pull request from this fork into the production repo.
 
 The three files below carry the dev-vs-prod configuration and intentionally differ between the two repos:
 
