@@ -81,27 +81,53 @@ Before calling `create_start_bulk_trigger` or `create_after_bulk_trigger`:
 
 ## Mapping agent inputs
 
-Every trigger type (except pure-static Schedule) needs a `payload_mapping` (or `iterate`, for start_bulk) that satisfies the target agent's `input_schema`. Resolve it in this order:
+Every trigger type needs a `payload_mapping` (or `iterate`, for start_bulk) that satisfies the target agent's `input_schema`. The mapping **syntax differs by trigger type**, this is the part the model gets wrong most often, so read the table carefully:
 
-1. **Enumerate the agent's required inputs.** From `get_agent(agent_id).agent.input_schema`, list every field in `required`, plus any optional fields the user explicitly mentioned.
+| Trigger type | Mapping lives in | Syntax | Example |
+|---|---|---|---|
+| **Schedule** | `payload_mapping` | **Static values only.** Values are passed verbatim as run_input, no path resolution. | `{"plan_tier": "basic", "client_id": "123"}` |
+| **Event** | `payload_mapping` | **Dot notation into the event's payload.** Keys are the agent's input field names; values are paths into the trigger's `payload_schema`. NO `$.` prefix, NO JSONPath. | `{"email_subject": "subject", "pdf_file": "attachment_list"}` |
+| **Start-bulk** | `iterate` (and optional `shared`) | **JSONPath** rooted at the PARENT agent's run state. `$.state.*`, `$.run_input.*`. `[*]` wildcard supported for array fan-out. | `{"client_id": "$.state.filtered_leases[*].id"}` |
+| **After-bulk** | `payload_mapping` | **JSONPath** rooted at the aggregated bulk-run output. `$.bulk_run.*`, `$.state.*`, `$.run_input.*`. | `{"report_summary": "$.bulk_run.per_run_array[*].final_report"}` |
 
-2. **Identify the source for each field** based on trigger type:
-   - **Schedule**: static values the user provides (e.g. `{"client_id": "123"}`). Optional entirely if the agent has no required inputs.
-   - **Event**: JSONPaths rooted at `$.payload.*`, drawn from the trigger's `payload_schema.properties` (from `list_available_external_triggers`).
-   - **Start-bulk**: JSONPaths rooted at `$.state.*` in the parent agent, usually an array path like `$.state.items[*].id`. This goes in `iterate`, not `payload_mapping`.
-   - **After-bulk**: JSONPaths rooted at `$.bulk_run.*` (the aggregated child-run output in the shape chosen by `aggregate_mode`).
+### Event-trigger mapping (dot notation) — the common gotcha
 
-3. **Auto-map what you can, conservatively.** For event triggers, match agent inputs to payload fields when names or types line up unambiguously. Common Gmail mappings:
-   - `subject` / `email_subject` ← `$.payload.subject`
-   - `sender` / `from_email` / `from` ← `$.payload.sender`
-   - `body` / `message_text` / `email_body` ← `$.payload.message_text`
-   - `thread_id` ← `$.payload.thread_id`
-   - If the agent input is a file/document and the payload has `attachment_list`, map to `$.payload.attachment_list[0]` and tell the user you assumed the first attachment.
-   - Only auto-map when you're confident. If several payload fields could plausibly fit one agent input (e.g. `recipients` vs `to` vs `cc`), ask.
+The backend `_apply_payload_mapping` + `_extract_value` in `kanban_trigger_service.py` parse the path with dot notation and bracket indexes, NOT JSONPath. Supported forms:
 
-4. **Ask the user for the rest.** For every required agent input you did not auto-map, prompt with the field name, its description from `input_schema`, and its type. Offer sensible options when payload fields could plausibly fit.
+| Form | Example | Resolves to |
+|---|---|---|
+| Bare top-level key | `"subject"` | `payload["subject"]` |
+| Nested key | `"headers.from"` | `payload["headers"]["from"]` |
+| Array index (brackets) | `"attachment_list[0]"` | `payload["attachment_list"][0]` |
+| Array index (dot) | `"items.0"` | `payload["items"][0]` |
+| Static literal | `"__static__:basic"` | the string `"basic"` |
 
-5. **Present the resolved mapping back for confirmation** as part of step 6 of the Core workflow. Show it as a table: agent input → source (auto or user-supplied). Do not call any `create_*_trigger` tool until the user confirms.
+Anything that starts with `$.` is treated as a literal key name, won't match, and the field is silently dropped. Do not use `$.payload.`, `$.`, or `[*]` in event `payload_mapping`.
+
+The webhook payload the server maps against is already the inner object described by the trigger's `payload_schema` (the Composio envelope is unwrapped before mapping). So the top-level keys in `payload_schema.properties` are what you reference directly.
+
+### Resolution order
+
+1. **Enumerate the agent's required inputs.** From `get_agent(agent_id).agent.input_schema`, list every field in `required`, plus any optional fields the user explicitly mentioned. Note which ones have `format: "file"`, they get special handling by the backend (see below).
+
+2. **Build the mapping using the right syntax for the trigger type** (see the table above). Common auto-mappings for Gmail events:
+
+   | Agent input (case-insensitive) | Payload path |
+   |---|---|
+   | `subject`, `email_subject` | `subject` |
+   | `sender`, `from_email`, `from` | `sender` |
+   | `body`, `message_text`, `email_body` | `message_text` |
+   | `thread_id` | `thread_id` |
+   | `to`, `recipient` | `to` |
+   | any file-format field, when payload has `attachment_list` | `attachment_list` (pass the whole list, let the backend fetch; do NOT drill into `[0].url`) |
+
+   For file fields specifically: the backend reads `input_schema.properties[field].format == "file"`, uses `toolkit_slug` to know how to download (Composio fetches the Gmail attachment by message_id automatically), and uploads to the run's S3 collection. Mapping to the array field like `"attachment_list"` is sufficient.
+
+   Only auto-map when you're confident. If several payload fields could plausibly fit one agent input (e.g. `recipients` vs `to` vs `cc`), ask.
+
+3. **Ask the user for the rest.** For every required agent input you did not auto-map, prompt with the field name, its description from `input_schema`, and its type. Offer sensible options when payload fields could plausibly fit. For Schedule triggers, remember these are static values, so you are asking the user for the literal value to use on every run.
+
+4. **Present the resolved mapping back for confirmation** as part of step 6 of the Core workflow. Show it as a table: agent input → source (auto or user-supplied). Do not call any `create_*_trigger` tool until the user confirms.
 
 ## Important things to tell the user
 
@@ -117,6 +143,10 @@ If the user says their trigger didn't fire:
 
 1. Call `list_agent_triggers` to check `status` (should be `active`) and `enabled` (should be `true`).
 2. Call `list_trigger_executions` to see whether the trigger received an event at all. If no executions, the issue is upstream (schedule hasn't ticked yet, Gmail hasn't matched, bulk run hasn't completed). If executions exist but failed, the payload_mapping or the agent itself likely has an issue.
+
+If the trigger fired but the agent ran with missing inputs (e.g. the user says "the run started but the PDF was never attached"):
+
+- You almost certainly used JSONPath (`$.payload.subject`, `$.payload.attachment_list[0]`) in an **event** trigger's `payload_mapping`. The backend parses that as a literal key name, finds nothing, drops the field silently. Re-read "Mapping agent inputs" above, delete the trigger with `delete_trigger`, and recreate it with bare dot-notation keys (`"subject"`, `"attachment_list"`).
 
 ## Tool reference
 
