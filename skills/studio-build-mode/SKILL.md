@@ -82,14 +82,23 @@ form-extracted (`is_form` works on PDFs only) and loses the layout the extractio
          collection is rejected.
       2. Run the returned `curl` in the shell with `<PATH_TO_FILE>` replaced by the file's real path.
          It uploads the original file unchanged. Do not alter the command, and use the same Content-Type.
-         A `curl` exit code other than 0 or an XML error means the upload failed; request a new URL and retry once.
+         Then read the result:
+         - exit 0 and an empty body (HTTP 200): uploaded.
+         - the response body is S3 XML (`<Error><Code>...`, for example `SignatureDoesNotMatch`, `ExpiredToken`,
+           `AccessDenied`): the link or Content-Type is wrong or expired. Call `get_upload_url` again and retry
+           ONCE with exactly the returned Content-Type.
+         - a 403, a "blocked" or "not allowed" message, a proxy or HTML page, a connection error, or no XML at
+           all: the shell's network policy is blocking the storage host. Do NOT retry and do NOT ask for a new
+           link: a new link cannot fix a blocked host. Go to the host rule below.
       3. `upload_documents(collection_id, files=[{"s3_key": "<s3_key>", "name": "<filename>"}], is_form=<bool>)`
          registers it. The `s3_key` entry replaces `data`; nothing else changes. If it says nothing was
          uploaded, the curl did not succeed: go back to 2.
-      In Claude Desktop or on claude.ai the shell runs in a sandbox: the S3 host (`*.s3.amazonaws.com`) may have
-      to be allowed under Settings, Capabilities, Code execution, "Additional allowed domains", and the sandbox
-      can only upload files it can see. If curl reports a network error or the file is not on the sandbox
-      disk, go to 3.
+      **Host rule.** `get_upload_url` returns `host` (for example `advisor-intake-bucket.s3.amazonaws.com`). In Claude
+      Desktop and on claude.ai the shell runs in a sandbox that only reaches allowed domains. Tell the user:
+      "Allow `<host>` under Settings, Capabilities, Code execution and file creation, Additional allowed domains,
+      then start a new chat or ask me to retry; or upload the PDF in PitCrew yourself." Then wait. If the user
+      allows it, retry from `get_upload_url` (a fresh link). If they would rather upload it, go to 3.
+      The sandbox can also only upload files it can see: if the file is not on its disk, go to 3.
    3. **Last resort: the user uploads it.** If neither route works (no shell, the file is not reachable, curl
       keeps failing), STOP. Tell the user to upload the original file in PitCrew into a new collection
       (turn the form option on for a form PDF) and give you its name or id, then continue from step 4. Reuse a
