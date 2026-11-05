@@ -35,6 +35,7 @@ form-extracted (`is_form` works on PDFs only) and loses the layout the extractio
 | `list_collections`, `get_collection` | Step 0: find a collection the user names |
 | `create_collection` | Step 0: no collection yet |
 | `upload_documents` | Step 0: put the source file in the collection (`is_form=true` for a form PDF) |
+| `get_upload_url` | Step 0 fallback: presigned URL to `curl` a PDF or large file in, then `upload_documents` with `s3_key` |
 | `get_collection_status` | Step 0: wait until `overall == "ready"`; gives each `document_id`, `md5_hash` and `form_extraction` |
 | `get_form_extraction`, `get_form_fields`, `start_form_extraction` | Step 0: the fields the backend extracted from a form PDF |
 | `get_relevant_citations` | Steps 1–2: read what the source says (pass `document_id`) |
@@ -68,12 +69,33 @@ form-extracted (`is_form` works on PDFs only) and loses the layout the extractio
    in the collection, call `start_form_extraction(collection_id, md5_hash)` instead.
    If the call fails because form extraction is off on this server, upload again without
    `is_form` and tell the user the field list will come from reading the document.
-   Limits: 10 MB per file and about 5 files per call. `data` must be the file's exact bytes in
-   base64. If you cannot send them reliably (a PDF is usually tens of thousands of characters),
-   STOP. Do not convert the file to Markdown or any other format as a workaround, and do not
-   upload a partial or re-encoded copy. Tell the user to upload the original in PitCrew into a
-   new collection (turn the form option on for a form PDF) and give you its name or id, then
-   continue from step 4 with that collection. Reuse a collection only if it holds the original file.
+   Limits: 10 MB per file and about 5 files per call.
+
+   **Which upload route (decide in this order):**
+   1. **Direct.** Use `data` (base64) only for a small file whose exact bytes you can encode and copy
+      without error (a short text file, a small CSV). Never for a PDF form: a PDF is tens of thousands of
+      characters, and one wrong character corrupts it silently.
+   2. **Fallback: presigned S3 upload.** For a PDF or any file you cannot send as base64, and only if you can
+      run shell commands and read the file from disk:
+      1. `get_upload_url(collection_id, filename)` returns `upload_url`, `s3_key`, `expires_in` and a `curl` command.
+         The link lasts 15 minutes and sits in this organization's own folder; a link from another org or
+         collection is rejected.
+      2. Run the returned `curl` in the shell with `<PATH_TO_FILE>` replaced by the file's real path.
+         It uploads the original file unchanged. Do not alter the command, and use the same Content-Type.
+         A `curl` exit code other than 0 or an XML error means the upload failed; request a new URL and retry once.
+      3. `upload_documents(collection_id, files=[{"s3_key": "<s3_key>", "name": "<filename>"}], is_form=<bool>)`
+         registers it. The `s3_key` entry replaces `data`; nothing else changes. If it says nothing was
+         uploaded, the curl did not succeed: go back to 2.
+      In Claude Desktop or on claude.ai the shell runs in a sandbox: the S3 host (`*.s3.amazonaws.com`) may have
+      to be allowed under Settings, Capabilities, Code execution, "Additional allowed domains", and the sandbox
+      can only upload files it can see. If curl reports a network error or the file is not on the sandbox
+      disk, go to 3.
+   3. **Last resort: the user uploads it.** If neither route works (no shell, the file is not reachable, curl
+      keeps failing), STOP. Tell the user to upload the original file in PitCrew into a new collection
+      (turn the form option on for a form PDF) and give you its name or id, then continue from step 4. Reuse a
+      collection only if it holds the original file.
+
+   Never convert, summarize, re-encode or shrink the file to get around an upload problem.
 4. **Wait.** Call `get_collection_status(collection_id)` until `overall == "ready"`
    (about 20–60 s per PDF plus embedding). Zero documents, `failed`, or still `ingesting` means
    you cannot continue: fix it or tell the user. Keep each document's `document_id`.
