@@ -14,7 +14,7 @@
         "source": "git-subdir",
         "url": "https://github.com/pitcrew-agents/pitcrew-plugin-dev.git",
         "path": "providers/openai",
-        "ref": "master"
+        "ref": "feat/openai-support"
       },
       "policy": {
         "installation": "INSTALLED_BY_DEFAULT",
